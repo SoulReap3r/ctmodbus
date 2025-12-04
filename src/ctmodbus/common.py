@@ -291,3 +291,82 @@ def csr_to_ranges(csr, max):
     loops = Loops(csr, minimum=0, maximum=65535)
     for loop in loops.max_count(max):
         yield loop.values()
+
+
+# ----------------------------------------------------------------------
+# VALUE PARSING HELPERS
+# ----------------------------------------------------------------------
+
+def prepare_register_string(string: str):
+    """
+    Convert a quoted string into 16-bit Modbus register values.
+    Example: "AB" → [0x4142]
+    """
+    import struct
+
+    encoded = string.encode("ascii", errors="ignore")
+
+    # Pad to even length for struct.unpack
+    if len(encoded) % 2 == 1:
+        encoded += b"\x00"
+
+    count = len(encoded) // 2
+    fmt = ">" + ("H" * count)
+
+    return list(struct.unpack(fmt, encoded))
+
+
+def prepare_hex_bytes(hex_string: str):
+    """
+    Convert raw hex text into bytes. Example: DEADBEEF → b'\xde\xad\xbe\xef'
+    """
+    try:
+        return bytes.fromhex(hex_string)
+    except Exception as e:
+        raise ValueError(f"Invalid HEX data: {hex_string}") from e
+
+
+def parse_value_list(value_string: str):
+    """
+    Master parser for write commands.
+    Supports:
+        - "strings"
+        - raw hex: DEADBEEF
+        - binary coil maps: 01100101
+        - decimal sequences: 123 44 512
+    """
+
+    value_string = value_string.strip()
+
+    # -------------------------------
+    # Case 1 — QUOTED STRINGS
+    # -------------------------------
+    if value_string.startswith('"') and value_string.endswith('"'):
+        cleaned = value_string.strip('"')
+        return prepare_register_string(cleaned)
+
+    # -------------------------------
+    # Case 2 — RAW HEX (DEADBEEF)
+    # -------------------------------
+    if all(c in "0123456789ABCDEFabcdef" for c in value_string) \
+            and len(value_string) >= 2:
+        # Could still be numeric; test hex decode:
+        try:
+            return prepare_hex_bytes(value_string)
+        except:
+            pass
+
+    # -------------------------------
+    # Case 3 — BINARY COIL MAP (010101)
+    # -------------------------------
+    if all(c in "01" for c in value_string):
+        return [int(b) for b in value_string]
+
+    # -------------------------------
+    # Case 4 — DECIMAL VALUES (1 2 3 4)
+    # -------------------------------
+    parts = value_string.split()
+    try:
+        return [int(x) for x in parts]
+    except:
+        raise ValueError(f"Cannot parse value list: '{value_string}'")

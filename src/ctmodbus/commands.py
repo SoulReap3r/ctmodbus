@@ -1,343 +1,224 @@
 """
-Control Things Modbus, aka ctmodbus.py
-
-# Copyright (C) 2019  Justin Searle
-#
-# This program is free software: you can redistribute it and/or modify it under
-# the terms of the GNU General Public License as published by the Free Software
-# Foundation, either version 3 of the License, or any later version.
-#
-# This program is distributed in the hope that it will be useful, but WITHOUT
-# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
-# FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
-# details at <http://www.gnu.org/licenses/>.
+Control Things Modbus Toolkit (ctmodbus)
+Clean, stable version – no custom completer.
+Compatible with ctui 0.7.x and pymodbus 2.5.x.
 """
 
-import socket
+import threading
+import time
 from datetime import datetime
 
+from pkg_resources import get_distribution
 from ctui import Ctui
 from ctui.dialogs import message_dialog
-from ctui.types import GreedyBin, GreedyInt
-from pkg_resources import get_distribution
-from pymodbus.client.sync import ModbusSerialClient, ModbusTcpClient, ModbusUdpClient
+
+from pymodbus.client.sync import (
+    ModbusSerialClient,
+    ModbusTcpClient,
+    ModbusUdpClient
+)
 from pymodbus.mei_message import ReadDeviceInformationRequest
 
 from ctmodbus import common
+from ctmodbus.tags import TagManager
 
+
+# ============================================================
+# CTUI SETUP
+# ============================================================
 ctmodbus = Ctui()
 ctmodbus.name = "ctmodbus"
 ctmodbus.version = get_distribution("ctmodbus").version
-ctmodbus.description = "A highly flexible Modbus tool made for penetration testers"
+ctmodbus.description = "Modbus penetration-testing toolkit"
 ctmodbus.prompt = "ctmodbus> "
 
 ctmodbus.session = None
 unit_id = 1
-statusbar = f"Session:{ctmodbus.session}"
+tag_manager = TagManager()
 
 
+# ============================================================
+# DEBUG COMMAND
+# ============================================================
 @ctmodbus.command
 def do_debug(cmd: str):
-    """
-    Run a python command for debugging
+    """Execute Python expression inside ctmodbus."""
+    try:
+        result = eval(cmd)
+        message_dialog(title="Debug Output", text=str(result))
+    except Exception as e:
+        message_dialog(title="Debug Error", text=str(e))
 
-    :PARAM: cmd: Python command to run in debug session
-    """
-    message_dialog(title="Debug", text=str(eval(cmd)))
 
-
+# ============================================================
+# CONNECTION COMMANDS
+# ============================================================
 @ctmodbus.command
 def do_connect():
-    """Connect to modbus device/service or list suggestions"""
-    output_text = "Connected Serial Devices\n"
-    output_text += common.list_serial_devices()
-    output_text += "\n\n\n"
-    output_text += "Listening Services on Localhost\n"
-    output_text += common.list_listening_ports()
-    output_text += "                                                            \n"
-    message_dialog(title="Suggestions", text=output_text)
-
-
-@ctmodbus.command
-def do_connect_ascii(device: str):
-    """
-    Connect to a Modbus ASCII serial device
-
-    :PARAM: device: Serial device path or COM port
-    """
-    assert (
-        ctmodbus.session == None
-    ), "Session already open.  Close first."  # ToDo assert session type
-    valid_device = common.validate_serial_device(device)
-    s = ModbusSerialClient(method="ascii", port=valid_device, timeout=1)
-    assert s.connect(), f"Could not connect to {valid_device}"
-    ctmodbus.session = s
-    date, time = str(datetime.today()).split()
-    return ctmodbus.output_text + f"ASCII session OPENED with {valid_device}\n"
-
-
-@ctmodbus.command
-def do_connect_rtu(device: str):
-    """
-    Connect to a Modbus RTU serial device
-
-    :PARAM: device: Serial device path or COM port
-    """
-    assert (
-        ctmodbus.session == None
-    ), "Session already open.  Close first."  # ToDo assert session type
-    valid_device = common.validate_serial_device(device)
-    s = ModbusSerialClient(method="rtu", port=valid_device, timeout=1)
-    assert s.connect(), f"Could not connect to {valid_device}"
-    ctmodbus.session = s
-    date, time = str(datetime.today()).split()
-    return (
-        ctmodbus.output_text
-        + f"RTU session OPENED with {valid_device}  at {date} {time}\n"
-    )
+    """Show available serial devices and listening ports."""
+    text = "Serial Devices:\n"
+    text += common.list_serial_devices()
+    text += "\n\nListening Ports:\n"
+    text += common.list_listening_ports()
+    message_dialog(title="System Info", text=text)
 
 
 @ctmodbus.command
 def do_connect_tcp(host_port: str):
-    """
-    Connect to a Modbus TCP device <IP/HOSTNAME>[:<PORT>]
+    """Connect to a Modbus TCP device. Usage: connect_tcp 127.0.0.1:502"""
+    assert ctmodbus.session is None, "Session already open."
 
-    :PARAM: host_port: <IP/HOSTNAME>[:<PORT>]
-    """
-    assert (
-        ctmodbus.session == None
-    ), "Session already open.  Close first."  # ToDo assert session type
     host, port = common.parse_ip_port(host_port)
     s = ModbusTcpClient(host, port, timeout=3)
+
     assert s.connect(), f"Could not connect to {host}:{port}"
     ctmodbus.session = s
-    date, time = str(datetime.today()).split()
-    return (
-        ctmodbus.output_text
-        + f"TCP session OPENED with {host}:{port} at {date} {time}\n"
-    )
+    return f"TCP session OPENED with {host}:{port}"
 
 
 @ctmodbus.command
 def do_connect_udp(host_port: str):
-    """
-    Connect to a Modbus UDP device
+    """Connect to a Modbus UDP device."""
+    assert ctmodbus.session is None, "Session already open."
 
-    :PARAM: host_port: <IP/HOSTNAME>[:<PORT>]
-    """
-    assert (
-        ctmodbus.session == None
-    ), "Session already open.  Close first."  # ToDo assert session type
     host, port = common.parse_ip_port(host_port)
     s = ModbusUdpClient(host, port, timeout=3)
+
     assert s.connect(), f"Could not connect to {host}:{port}"
     ctmodbus.session = s
-    date, time = str(datetime.today()).split()
-    return (
-        ctmodbus.output_text
-        + f"UDP session OPENED with {host}:{port} at {date} {time}\n"
-    )
+    return f"UDP session OPENED with {host}:{port}"
 
 
 @ctmodbus.command
 def do_close():
-    """
-    Close the open session
-    """
-    assert (
-        ctmodbus.session
-    ), "There is not an open session.  Connect to one first."  # ToDo assert session type
+    """Close the active Modbus session."""
+    assert ctmodbus.session, "No session open."
     ctmodbus.session.close()
     ctmodbus.session = None
-    return ctmodbus.output_text + "Session CLOSED\n"
+    return "Session CLOSED."
 
 
-@ctmodbus.command
-def do_read():
-    """Various modbus read functions..."""
-
-
+# ============================================================
+# READ COMMANDS
+# ============================================================
 @ctmodbus.command
 def do_read_id():
-    """
-    Read device identification data
-    """
-    assert ctmodbus.session, "There is not an open session.  Connect to one first."
-    response = ctmodbus.session.execute(ReadDeviceInformationRequest(unit=1))
-    assert not response.isError(), "Read DevID is not supported"
-    date, time = str(datetime.today()).split()
-    output_text = ctmodbus.output_text
+    """Read Modbus Device Identification."""
+    assert ctmodbus.session, "No session open."
+
+    resp = ctmodbus.session.execute(ReadDeviceInformationRequest(unit=1))
+    assert not resp.isError(), "Device does not support Read ID."
+
     keys = [
-        "VendorName",
-        "ProductCode",
-        "MajorMinorRevision",
-        "VendorUrl",
-        "ProductName",
-        "ModelName",
-        "UserApplicationName",
+        "VendorName", "ProductCode", "MajorMinorRevision",
+        "VendorUrl", "ProductName", "ModelName", "UserApplicationName"
     ]
-    for i in range(len(response.information)):
-        if i < 7:
-            output_text += f"{date} {time} - (43) Read DevID {keys[i]}: {str(response.information[i])}\n"
-        else:
-            output_text += f"{date} {time} - (43) Read DevID ObjectID {i}: {str(response.information[i])}\n"
-    return output_text
+
+    text = ""
+    for i, val in enumerate(resp.information):
+        label = keys[i] if i < len(keys) else f"ObjectID {i}"
+        text += f"{label}: {val}\n"
+
+    return text
 
 
+# ============================================================
+# WRITE COMMANDS
+# ============================================================
 @ctmodbus.command
-def do_read_discreteInputs(csr: str, max: int = 2000):
-    """
-    Read discrete inputs (on/off) in format: 30,50,70-99,105
+def do_write_coils(address: int, *values):
+    """Write one or more coil values."""
+    assert ctmodbus.session, "No open session."
 
-    :PARAM: csr: Comma separated ranges to read
-    :PARAM: max: Optional max addresses to read per request (default 2000)
-    """
-    assert ctmodbus.session, "There is not an open session.  Connect to one first."
-    desc = "(2) Read DisIn"
-    results = {}
-    output_text = ctmodbus.output_text
-    for start, stop, count in common.csr_to_ranges(csr, max):
-        response = ctmodbus.session.read_discrete_inputs(start, count, unit=unit_id)
-        assert hasattr(response, "bits"), "No response received"
-        for address, result in zip(range(start, stop), response.bits):
-            results[address] = int(result)
-        output_text += common.log_and_output_bits(desc, start, stop, results)
-    ranges = csr.split()[0]
-    message = f"{desc}: {ranges}\n\n"
-    common.summarize_bit_responses(message, results)
-    return output_text
+    parsed = common.parse_value_list(" ".join(values))
+    if isinstance(parsed, int):
+        parsed = [parsed]
 
-
-@ctmodbus.command
-def do_read_coils(csr: str, max: int = 2000):
-    """
-    Read coils (digital outputs and internal boolean tags) in format: 30,50,70-99,105
-
-    :PARAM: csr: Comma separated ranges to read
-    :PARAM: max: Optional max addresses to read per request (default 2000)
-    """
-    assert ctmodbus.session, "There is not an open session.  Connect to one first."
-    desc = "(1) Read Coils"
-    results = {}
-    output_text = ctmodbus.output_text
-    for start, stop, count in common.csr_to_ranges(csr, max):
-        response = ctmodbus.session.read_coils(start, count, unit=unit_id)
-        assert hasattr(response, "bits"), "No response received"
-        for address, result in zip(range(start, stop), response.bits):
-            results[address] = int(result)
-        output_text += common.log_and_output_bits(desc, start, stop, results)
-    ranges = csr.split()[0]
-    message = f"{desc}: {ranges}\n\n"
-    common.summarize_bit_responses(message, results)
-    return output_text
-
-
-@ctmodbus.command
-def do_read_inputRegisters(csr: str, max: int = 125):
-    """
-    Read input registers (analog inputs) in format: 30,50,70-99,105
-
-    :PARAM: csr: Comma separated ranges to read
-    :PARAM: max: Optional max addresses to read per request (default 125)
-    """
-    assert ctmodbus.session, "There is not an open session.  Connect to one first."
-    desc = "(4) Read InReg"
-    results = {}
-    output_text = ctmodbus.output_text
-    for start, stop, count in common.csr_to_ranges(csr, max):
-        response = ctmodbus.session.read_input_registers(start, count, unit=unit_id)
-        assert hasattr(response, "registers"), "No response received"
-        for address, result in zip(range(start, stop), response.registers):
-            results[address] = result
-        output_text += common.log_and_output_words(desc, start, stop, results)
-    ranges = csr.split()[0]
-    message = f"{desc}: {ranges}\n\n"
-    common.summarize_word_responses(message, results)
-    return output_text
-
-
-@ctmodbus.command
-def do_read_holdingRegisters(csr: str, max: int = 125):
-    """
-    Read holding registers (analog outputs and internal tags) in format: 30,50,70-99,105
-
-    :PARAM: csr: Comma separated ranges to read
-    :PARAM: max: Optional max addresses to read per request (default 125)
-    """
-    assert ctmodbus.session, "There is not an open session.  Connect to one first."
-    desc = "(3) Read HoReg"
-    results = {}
-    output_text = ctmodbus.output_text
-    for start, stop, count in common.csr_to_ranges(csr, max):
-        response = ctmodbus.session.read_holding_registers(start, count, unit=unit_id)
-        assert hasattr(response, "registers"), "No response received"
-        for address, result in zip(range(start, stop), response.registers):
-            results[address] = result
-        output_text += common.log_and_output_words(desc, start, stop, results)
-    ranges = csr.split()[0]
-    message = f"{desc}: {ranges}\n\n"
-    common.summarize_word_responses(message, results)
-    return output_text
-
-
-@ctmodbus.command
-def do_write():
-    """Various modbus write commands..."""
-
-
-@ctmodbus.command
-def do_write_register(address: int, values: GreedyInt):
-    """
-    Write single register in format: <address> <int>
-
-    :PARAM: address: Modbus address to start writes
-    :PARAM: values: Space separated integers to write
-    """
-    assert ctmodbus.session, "There is not an open session.  Connect to one first."
-    if len(values) == 1:
-        ctmodbus.session.write_register(address, values[0], unit=unit_id)
-        desc = "Modbus Function 6, Write Single Register"
+    if len(parsed) == 1:
+        ctmodbus.session.write_coil(address, parsed[0], unit=unit_id)
+        desc = "Write Single Coil"
     else:
-        # This is currently not working, as GreedyInt doesn't pass on a list
-        ctmodbus.session.write_registers(address, values, unit=unit_id)
-        desc = "Modbus Function 16, Write Multiple Registers"
-    message_dialog(title="Success", text=f"Wrote {values} starting at {address}")
-    results = {}
-    stop = address + len(values)
-    for i in range(len(values)):
-        results[address + i] = values[i]
-    output_text = ctmodbus.output_text
-    output_text += common.log_and_output_words(desc, address, stop, results)
-    return output_text
+        ctmodbus.session.write_coils(address, parsed, unit=unit_id)
+        desc = "Write Multiple Coils"
+
+    results = {address + i: v for i, v in enumerate(parsed)}
+    return common.log_and_output_bits(desc, address, address + len(parsed), results)
 
 
 @ctmodbus.command
-def do_write_coil(address: int, values: GreedyBin):
-    """
-    Write single coil in format: <address> <0 or 1>
+def do_write_holdingRegisters(address: int, *values):
+    """Write holding registers (int, string, hex)."""
+    assert ctmodbus.session, "No open session."
 
-    :PARAM: address: Modbus address to start writes
-    :PARAM: values: Space separated list of True or False to write
-    """
-    assert ctmodbus.session, "There is not an open session.  Connect to one first."
-    if len(values) == 1:
-        ctmodbus.session.write_coil(address, values[0], unit=unit_id)
-        desc = "Modbus Function 5, Write Single Coil"
+    parsed = common.parse_value_list(" ".join(values))
+    if isinstance(parsed, bytes):
+        parsed = list(parsed)
+    if isinstance(parsed, int):
+        parsed = [parsed]
+
+    if len(parsed) == 1:
+        ctmodbus.session.write_register(address, parsed[0], unit=unit_id)
+        desc = "Write Single Register"
     else:
-        # This is currently not working, as GreedyBin doesn't pass on a list
-        ctmodbus.session.write_coils(address, values, unit=unit_id)
-        desc = "Modbus Function 15, Write Multiple Coils"
-    message_dialog(title="Success", text=f"Wrote {values} starting at {address}")
-    results = {}
-    stop = address + len(values)
-    for i in range(len(values)):
-        results[address + i] = int(values[i])
-    output_text = ctmodbus.output_text
-    output_text += common.log_and_output_bits(desc, address, stop, results)
-    return output_text
+        ctmodbus.session.write_registers(address, parsed, unit=unit_id)
+        desc = "Write Multiple Registers"
+
+    results = {address + i: v for i, v in enumerate(parsed)}
+    return common.log_and_output_words(desc, address, address + len(parsed), results)
 
 
+# ============================================================
+# POLLING ENGINE
+# ============================================================
+def polling_worker(session, mode, csr, interval):
+    loops = common.Loops(csr, minimum=0, maximum=65535)
+
+    while True:
+        try:
+            for loop in loops:
+                start, stop, count = loop["start"], loop["stop"], loop["count"]
+
+                if mode == "coils":
+                    resp = session.read_coils(start, count)
+                    results = {a: int(b) for a, b in zip(range(start, stop), resp.bits)}
+                    print(common.log_and_output_bits("poll coils", start, stop, results))
+
+                elif mode == "holding_register":
+                    resp = session.read_holding_registers(start, count)
+                    results = {a: v for a, v in zip(range(start, stop), resp.registers)}
+                    print(common.log_and_output_words("poll hreg", start, stop, results))
+
+            time.sleep(interval)
+
+        except Exception as e:
+            print(f"[POLL ERROR] {e}")
+            time.sleep(interval)
+
+
+@ctmodbus.command
+def do_poll(mode: str, csr: str, interval: int):
+    """Poll coils/registers repeatedly. Example: poll coils 1-20 1"""
+    assert ctmodbus.session, "No session open."
+
+    valid = ["coils", "holding_register"]
+    if mode not in valid:
+        raise ValueError(f"Invalid type. Must be one of {valid}")
+
+    thread = threading.Thread(
+        target=polling_worker,
+        args=(ctmodbus.session, mode, csr, interval),
+        daemon=True
+    )
+    thread.start()
+
+    return f"Polling started: {mode} {csr} every {interval}s"
+
+
+# ============================================================
+# MAIN ENTRY POINT
+# ============================================================
 def main():
+    """Required for ctmodbus.exe entry point."""
     ctmodbus.run()
 
 
