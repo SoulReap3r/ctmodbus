@@ -1,7 +1,6 @@
 """
-Control Things Modbus Toolkit (ctmodbus)
-Clean, stable version – no custom completer.
-Compatible with ctui 0.7.x and pymodbus 2.5.x.
+ctmodbus – Complete patched command module
+Fully compatible with ctui 0.7.x and pymodbus 2.5.x
 """
 
 import threading
@@ -21,6 +20,7 @@ from pymodbus.mei_message import ReadDeviceInformationRequest
 
 from ctmodbus import common
 from ctmodbus.tags import TagManager
+from ctmodbus.completer import CommandCompleter
 
 
 # ============================================================
@@ -36,13 +36,16 @@ ctmodbus.session = None
 unit_id = 1
 tag_manager = TagManager()
 
+# enable safer completer
+ctmodbus.completer = CommandCompleter(ctmodbus.commands)
+
 
 # ============================================================
-# DEBUG COMMAND
+# DEBUG
 # ============================================================
 @ctmodbus.command
 def do_debug(cmd: str):
-    """Execute Python expression inside ctmodbus."""
+    """Execute Python expression inside ctmodbus"""
     try:
         result = eval(cmd)
         message_dialog(title="Debug Output", text=str(result))
@@ -54,21 +57,11 @@ def do_debug(cmd: str):
 # CONNECTION COMMANDS
 # ============================================================
 @ctmodbus.command
-def do_connect():
-    """Show available serial devices and listening ports."""
-    text = "Serial Devices:\n"
-    text += common.list_serial_devices()
-    text += "\n\nListening Ports:\n"
-    text += common.list_listening_ports()
-    message_dialog(title="System Info", text=text)
-
-
-@ctmodbus.command
-def do_connect_tcp(host_port: str):
-    """Connect to a Modbus TCP device. Usage: connect_tcp 127.0.0.1:502"""
+def do_connect_tcp(target: str):
+    """Connect to a Modbus TCP device. Usage: connect tcp 127.0.0.1:502"""
     assert ctmodbus.session is None, "Session already open."
 
-    host, port = common.parse_ip_port(host_port)
+    host, port = common.parse_ip_port(target)
     s = ModbusTcpClient(host, port, timeout=3)
 
     assert s.connect(), f"Could not connect to {host}:{port}"
@@ -77,11 +70,11 @@ def do_connect_tcp(host_port: str):
 
 
 @ctmodbus.command
-def do_connect_udp(host_port: str):
+def do_connect_udp(target: str):
     """Connect to a Modbus UDP device."""
     assert ctmodbus.session is None, "Session already open."
 
-    host, port = common.parse_ip_port(host_port)
+    host, port = common.parse_ip_port(target)
     s = ModbusUdpClient(host, port, timeout=3)
 
     assert s.connect(), f"Could not connect to {host}:{port}"
@@ -91,7 +84,7 @@ def do_connect_udp(host_port: str):
 
 @ctmodbus.command
 def do_close():
-    """Close the active Modbus session."""
+    """Close active Modbus session."""
     assert ctmodbus.session, "No session open."
     ctmodbus.session.close()
     ctmodbus.session = None
@@ -101,25 +94,74 @@ def do_close():
 # ============================================================
 # READ COMMANDS
 # ============================================================
+def _format_result(title, base, values):
+    text = f"{title}:\n"
+    for i, v in enumerate(values):
+        text += f"  {base + i}: {v}\n"
+    return text
+
+
 @ctmodbus.command
 def do_read_id():
     """Read Modbus Device Identification."""
     assert ctmodbus.session, "No session open."
 
-    resp = ctmodbus.session.execute(ReadDeviceInformationRequest(unit=1))
+    resp = ctmodbus.session.execute(ReadDeviceInformationRequest(unit=unit_id))
     assert not resp.isError(), "Device does not support Read ID."
 
-    keys = [
-        "VendorName", "ProductCode", "MajorMinorRevision",
-        "VendorUrl", "ProductName", "ModelName", "UserApplicationName"
-    ]
-
-    text = ""
+    text = "Device Identification:\n"
     for i, val in enumerate(resp.information):
-        label = keys[i] if i < len(keys) else f"ObjectID {i}"
-        text += f"{label}: {val}\n"
+        text += f"  {i}: {val}\n"
 
     return text
+
+
+@ctmodbus.command
+def do_read_coils(address: int, count: int = 1):
+    """Read coils. Usage: read coils 0 10"""
+    assert ctmodbus.session, "No session open."
+
+    resp = ctmodbus.session.read_coils(address, count, unit=unit_id)
+    if resp.isError():
+        return "Read error."
+
+    return _format_result("Coils", address, resp.bits[:count])
+
+
+@ctmodbus.command
+def do_read_discrete(address: int, count: int = 1):
+    """Read discrete inputs. Usage: read discrete 0 10"""
+    assert ctmodbus.session, "No session open."
+
+    resp = ctmodbus.session.read_discrete_inputs(address, count, unit=unit_id)
+    if resp.isError():
+        return "Read error."
+
+    return _format_result("Discrete Inputs", address, resp.bits[:count])
+
+
+@ctmodbus.command
+def do_read_holding(address: int, count: int = 1):
+    """Read holding registers. Usage: read holding 0 10"""
+    assert ctmodbus.session, "No session open."
+
+    resp = ctmodbus.session.read_holding_registers(address, count, unit=unit_id)
+    if resp.isError():
+        return "Read error."
+
+    return _format_result("Holding Registers", address, resp.registers)
+
+
+@ctmodbus.command
+def do_read_input(address: int, count: int = 1):
+    """Read input registers. Usage: read input 0 10"""
+    assert ctmodbus.session, "No session open."
+
+    resp = ctmodbus.session.read_input_registers(address, count, unit=unit_id)
+    if resp.isError():
+        return "Read error."
+
+    return _format_result("Input Registers", address, resp.registers)
 
 
 # ============================================================
@@ -127,8 +169,8 @@ def do_read_id():
 # ============================================================
 @ctmodbus.command
 def do_write_coils(address: int, *values):
-    """Write one or more coil values."""
-    assert ctmodbus.session, "No open session."
+    """Write coils. Usage: write coils 0 1 0 1"""
+    assert ctmodbus.session, "No session open."
 
     parsed = common.parse_value_list(" ".join(values))
     if isinstance(parsed, int):
@@ -136,89 +178,74 @@ def do_write_coils(address: int, *values):
 
     if len(parsed) == 1:
         ctmodbus.session.write_coil(address, parsed[0], unit=unit_id)
-        desc = "Write Single Coil"
     else:
         ctmodbus.session.write_coils(address, parsed, unit=unit_id)
-        desc = "Write Multiple Coils"
 
-    results = {address + i: v for i, v in enumerate(parsed)}
-    return common.log_and_output_bits(desc, address, address + len(parsed), results)
+    return f"Wrote {parsed} starting at {address}"
 
 
 @ctmodbus.command
 def do_write_holdingRegisters(address: int, *values):
-    """Write holding registers (int, string, hex)."""
-    assert ctmodbus.session, "No open session."
+    """Write holding registers."""
+    assert ctmodbus.session, "No session open."
 
     parsed = common.parse_value_list(" ".join(values))
     if isinstance(parsed, bytes):
         parsed = list(parsed)
-    if isinstance(parsed, int):
+    elif isinstance(parsed, int):
         parsed = [parsed]
 
     if len(parsed) == 1:
         ctmodbus.session.write_register(address, parsed[0], unit=unit_id)
-        desc = "Write Single Register"
     else:
         ctmodbus.session.write_registers(address, parsed, unit=unit_id)
-        desc = "Write Multiple Registers"
 
-    results = {address + i: v for i, v in enumerate(parsed)}
-    return common.log_and_output_words(desc, address, address + len(parsed), results)
+    return f"Wrote {parsed} starting at {address}"
 
 
 # ============================================================
-# POLLING ENGINE
+# POLLING
 # ============================================================
-def polling_worker(session, mode, csr, interval):
-    loops = common.Loops(csr, minimum=0, maximum=65535)
-
+def polling_worker(session, mode, address, count, interval):
     while True:
         try:
-            for loop in loops:
-                start, stop, count = loop["start"], loop["stop"], loop["count"]
+            if mode == "coils":
+                resp = session.read_coils(address, count, unit=unit_id)
+                print(_format_result("Poll Coils", address, resp.bits[:count]))
 
-                if mode == "coils":
-                    resp = session.read_coils(start, count)
-                    results = {a: int(b) for a, b in zip(range(start, stop), resp.bits)}
-                    print(common.log_and_output_bits("poll coils", start, stop, results))
-
-                elif mode == "holding_register":
-                    resp = session.read_holding_registers(start, count)
-                    results = {a: v for a, v in zip(range(start, stop), resp.registers)}
-                    print(common.log_and_output_words("poll hreg", start, stop, results))
-
-            time.sleep(interval)
+            elif mode == "holding":
+                resp = session.read_holding_registers(address, count, unit=unit_id)
+                print(_format_result("Poll Holding", address, resp.registers))
 
         except Exception as e:
             print(f"[POLL ERROR] {e}")
-            time.sleep(interval)
+
+        time.sleep(interval)
 
 
 @ctmodbus.command
-def do_poll(mode: str, csr: str, interval: int):
-    """Poll coils/registers repeatedly. Example: poll coils 1-20 1"""
+def do_poll(mode: str, address: int, count: int, interval: int):
+    """Poll values. Example: poll coils 0 10 1"""
     assert ctmodbus.session, "No session open."
 
-    valid = ["coils", "holding_register"]
+    valid = ["coils", "holding"]
     if mode not in valid:
-        raise ValueError(f"Invalid type. Must be one of {valid}")
+        return f"Mode must be one of {valid}"
 
     thread = threading.Thread(
         target=polling_worker,
-        args=(ctmodbus.session, mode, csr, interval),
+        args=(ctmodbus.session, mode, address, count, interval),
         daemon=True
     )
     thread.start()
 
-    return f"Polling started: {mode} {csr} every {interval}s"
+    return f"Polling {mode} every {interval}s"
 
 
 # ============================================================
-# MAIN ENTRY POINT
+# MAIN ENTRY
 # ============================================================
 def main():
-    """Required for ctmodbus.exe entry point."""
     ctmodbus.run()
 
 
